@@ -1,136 +1,127 @@
-'use client'
-import { useEffect, useRef } from 'react'
-import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+'use client';
+
+import { useEffect, useRef } from 'react';
+import * as THREE from 'three';
+import * as RAPIER from '@dimforge/rapier3d-compat';
+
+
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ajuste o caminho conforme seu projeto
+import BaseMesh from '@/app/Entities/Physiscs/BaseMesh';
 
 export default function World() {
-  const mountRef = useRef<HTMLDivElement>(null)
+  const mountRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const currentMount = mountRef.current
-    if (!currentMount) return
+    
+    const currentMount = mountRef.current;
+    if (!currentMount) return;
 
-    const scene = new THREE.Scene()
-
+    /* ---------- THREE  ---------- */
+    const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(
       75,
       window.innerWidth / window.innerHeight,
       0.1,
       1000
-    )
-    camera.position.set(0, 1, 5)
+    );
+    camera.position.set(0, 2, 6);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
-    renderer.setSize(window.innerWidth, window.innerHeight)
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    currentMount.appendChild(renderer.domElement);
 
-    // Ativa sombras no renderer
-    renderer.shadowMap.enabled = true
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap // sombra suave, mais realista
-
-    currentMount.appendChild(renderer.domElement)
-
-    // OrbitControls só no modo desenvolvimento
-    let controls: OrbitControls | null = null
+    /* OrbitControls (apenas dev) */
+    let controls: OrbitControls | null = null;
     if (process.env.NODE_ENV === 'development') {
-      controls = new OrbitControls(camera, renderer.domElement)
-      controls.enableDamping = true
-      controls.dampingFactor = 0.05
-      controls.minDistance = 1
-      controls.maxDistance = 100
-      controls.target.set(0, 0, 0)
-      controls.update()
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.minDistance = 1;
+      controls.maxDistance = 100;
     }
 
-    // Luz hemisférica (céu e chão) - simula luz ambiente
-    const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x444444, 0.6) // azul céu e tom terra
-    hemiLight.position.set(0, 20, 0)
-    scene.add(hemiLight)
+    /* Luzes */
+    scene.add(new THREE.HemisphereLight(0x87ceeb, 0x444444, 0.6));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    dirLight.position.set(10, 20, 10);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.set(2048, 2048);
+    dirLight.shadow.camera.left = dirLight.shadow.camera.bottom = -25;
+    dirLight.shadow.camera.right = dirLight.shadow.camera.top = 25;
+    scene.add(dirLight);
 
-    // Luz direcional (sol) com sombra configurada para alta qualidade
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.2)
-    dirLight.position.set(10, 20, 10)
-    dirLight.castShadow = true
+    /* ---------- RAPIER ---------- */
+    (async () => {
+      await RAPIER.init(); // WebAssembly
+      const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 
-    const d = 25
-    dirLight.shadow.camera.left = -d
-    dirLight.shadow.camera.right = d
-    dirLight.shadow.camera.top = d
-    dirLight.shadow.camera.bottom = -d
-    dirLight.shadow.camera.near = 1
-    dirLight.shadow.camera.far = 50
+      /* Chão físico + malha receptora de sombra */
+      const groundMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(200, 200),
+        new THREE.ShadowMaterial({ opacity: 0.3 })
+      );
+      groundMesh.rotation.x = -Math.PI / 2;
+      groundMesh.receiveShadow = true;
+      scene.add(groundMesh);
 
-    dirLight.shadow.mapSize.width = 2048
-    dirLight.shadow.mapSize.height = 2048
-    dirLight.shadow.bias = -0.001 // remove artefatos
+      const groundBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+      world.createCollider(RAPIER.ColliderDesc.cuboid(100, 0.1, 100), groundBody);
 
-    scene.add(dirLight)
+      /* ---------- ENTIDADES ---------- */
+      const entities: BaseMesh[] = [];
 
-    // Chão invisível para capturar sombra
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(200, 200),
-      new THREE.ShadowMaterial({ opacity: 0.3 })
-    )
-    ground.rotation.x = -Math.PI / 2
-    ground.position.y = 0
-    ground.receiveShadow = true
-    scene.add(ground)
+      // cidade GLB (estática – pode ser corpo fixo, mas usamos dinâmico + massa alta para demo)
+      const city = await BaseMesh.loadObj(
+        scene,
+        world,
+        '/models/city.glb'
+      );
+      entities.push(city);
 
-    // Carregamento do GLB e ativar sombras para todos os meshes
-    const gltfLoader = new GLTFLoader()
-    gltfLoader.load('/models/city.glb', (gltf) => {
-      const root = gltf.scene
-      root.scale.set(0.5, 0.5, 0.5)
+      // (exemplo) caixa FBX dinâmica
+      // const crate = await BaseMesh.loadObj(scene, world, '/models/crate.fbx');
+      // entities.push(crate);
 
-      root.traverse((child) => {
-        if ((child as THREE.Mesh).isMesh) {
-          const mesh = child as THREE.Mesh
-          mesh.castShadow = true
-          mesh.receiveShadow = true
+      /* ---------- LOOP ---------- */
+      const clock = new THREE.Clock();
 
-          // Opcional: garantir material PBR para melhor interação com luz
-          if (mesh.material) {
-            mesh.material = new THREE.MeshStandardMaterial({
-              map: (mesh.material as any).map || null,
-              metalness: 0.3,
-              roughness: 0.7,
-              envMapIntensity: 1,
-            })
-          }
-        }
-      })
+      const animate = () => {
+        requestAnimationFrame(animate);
 
-      scene.add(root)
-      console.log('GLB carregado', root)
-    })
+        const delta = clock.getDelta();
+        world.timestep = delta;   // mantém física ~ tempo real
+        world.step();
 
-    // Resize
-    const handleResize = () => {
-      camera.aspect = window.innerWidth / window.innerHeight
-      camera.updateProjectionMatrix()
-      renderer.setSize(window.innerWidth, window.innerHeight)
-    }
-    window.addEventListener('resize', handleResize)
+        entities.forEach((e) => e.update());
+        controls?.update();
+        renderer.render(scene, camera);
+      };
+      animate();
 
-    // Render loop
-    const animate = () => {
-      requestAnimationFrame(animate)
-      controls?.update()
-      renderer.render(scene, camera)
-    }
-    animate()
+      /* ---------- CLEANUP ---------- */
+      const handleResize = () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      };
+      window.addEventListener('resize', handleResize);
 
-    return () => {
-      window.removeEventListener('resize', handleResize)
-      currentMount.removeChild(renderer.domElement)
-    }
-  }, [])
+      return () => {
+        window.removeEventListener('resize', handleResize);
+        currentMount.removeChild(renderer.domElement);
+      };
+    })();
+  }, []);
 
   return (
     <div
       ref={mountRef}
-      style={{ width: '100%', height: '100vh' }}
       className="absolute z-10 w-full h-screen"
+      style={{ width: '100%', height: '100vh' }}
     />
-  )
+  );
 }
